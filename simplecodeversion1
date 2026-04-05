@@ -1,0 +1,314 @@
+"""
+Decision Engine v0.1
+====================
+A rule-based, multi-criteria decision support tool.
+
+Architecture (your design):
+    Variables → Completeness Check → Constraint Filter
+    → Scoring Model → Guardrails → Ranked Output
+
+Scoring criteria (your priority order):
+    ADHD feasibility  (non-negotiable filter)
+    Trajectory impact (0.30 weight)
+    Income impact     (0.20 weight)
+    ADHD score        (0.20 weight)
+    Time cost         (0.15 weight — lower is better)
+    Risk              (0.15 weight — lower is better)
+
+Author: Mim Thanosawan
+Version: 0.1
+"""
+
+# ──────────────────────────────────────────────
+# SECTION 1: DECISION DATA (your variables)
+# ──────────────────────────────────────────────
+
+decision_case = {
+
+    "objective": "Increase career momentum",
+
+    "resources": {
+        "time_hours":   3,   # hours available per day
+        "energy":       3,   # 1–5 scale (1=depleted, 5=high)
+        "python_skill": 4    # 1–5 scale
+    },
+
+    "constraints": {
+        # ADHD feasibility threshold: options scoring below this are rejected
+        "adhd_min_score": 3,
+        # True = these conditions exist and limit options
+        "hardware_limit": True,
+        "heat_fatigue":   True
+    },
+
+    "options": [
+        "Build decision tool",
+        "Increase freelance",
+        "Study more Python",
+        "Do nothing"
+    ]
+
+}
+
+# Option scores table — rate each option 1–5 on each criterion.
+# Modify these values to reflect your actual assessment.
+OPTION_SCORES = {
+    "Build decision tool": {
+        "trajectory": 5,
+        "income":     3,
+        "time":       4,   # 4 = low time cost (good)
+        "risk":       2,   # 2 = low risk (good)
+        "adhd":       5
+    },
+    "Increase freelance": {
+        "trajectory": 3,
+        "income":     5,
+        "time":       3,
+        "risk":       3,
+        "adhd":       3
+    },
+    "Study more Python": {
+        "trajectory": 4,
+        "income":     2,
+        "time":       3,
+        "risk":       1,
+        "adhd":       4
+    },
+    "Do nothing": {
+        "trajectory": 1,
+        "income":     1,
+        "time":       5,
+        "risk":       1,
+        "adhd":       2
+    }
+}
+
+# Explanation for each option (your reasoning transparency layer)
+OPTION_EXPLANATIONS = {
+    "Build decision tool":  "High trajectory impact, ADHD-compatible, builds long-term positioning.",
+    "Increase freelance":   "Good income but medium engagement — may feel repetitive over time.",
+    "Study more Python":    "Builds skill but slower feedback loop; works best combined with building.",
+    "Do nothing":           "Lowest trajectory impact; ADHD tends to worsen without engagement."
+}
+
+# Scoring weights (must sum to 1.0)
+# Adjust these to change how the engine prioritizes criteria.
+WEIGHTS = {
+    "trajectory": 0.30,
+    "income":     0.20,
+    "adhd":       0.20,
+    "time":       0.15,   # subtracted (lower time cost = better)
+    "risk":       0.15    # subtracted (lower risk = better)
+}
+
+
+# ──────────────────────────────────────────────
+# SECTION 2: GUARDRAIL MODULES
+# ──────────────────────────────────────────────
+
+def completeness_check(case: dict) -> tuple[bool, list]:
+    """
+    Guardrail: Verify all required decision variables are present.
+    Returns (is_complete, list_of_missing_fields).
+    Prevents the engine from running on incomplete data.
+    """
+    required = ["objective", "resources", "constraints", "options"]
+    missing = [field for field in required if field not in case]
+
+    if missing:
+        return False, missing
+    if not case["options"]:
+        return False, ["options list is empty"]
+
+    return True, []
+
+
+def uncertainty_check(ranked_results: list) -> str:
+    """
+    Guardrail: Detect when top scores are too close to decide confidently.
+    If top two options are within 0.3 of each other, flag for review.
+    """
+    if len(ranked_results) < 2:
+        return "Only one option available — decision straightforward."
+
+    top_score    = ranked_results[0][1]
+    second_score = ranked_results[1][1]
+
+    if abs(top_score - second_score) < 0.3:
+        return (
+            f"WARNING: Top two options are very close "
+            f"({top_score:.2f} vs {second_score:.2f}). "
+            f"Consider gathering more data before deciding."
+        )
+    return "OK"
+
+
+def energy_state_check(resources: dict) -> str:
+    """
+    Guardrail: ADHD adaptive layer.
+    Adjusts recommendation tone based on current energy level.
+    """
+    energy = resources.get("energy", 3)
+
+    if energy <= 2:
+        return "LOW ENERGY MODE → Prioritise small, low-friction tasks today."
+    if energy == 3:
+        return "MEDIUM ENERGY → Moderate complexity tasks are appropriate."
+    return "HIGH ENERGY → Good time to tackle complex or new work."
+
+
+# ──────────────────────────────────────────────
+# SECTION 3: CONSTRAINT FILTER
+# ──────────────────────────────────────────────
+
+def constraint_filter(options: list, case: dict) -> list:
+    """
+    Remove options that fail the non-negotiable ADHD feasibility filter.
+    An option is rejected if its ADHD score falls below the threshold
+    defined in constraints["adhd_min_score"].
+    """
+    threshold = case["constraints"].get("adhd_min_score", 3)
+    valid = []
+
+    for option in options:
+        if option not in OPTION_SCORES:
+            # Unknown option — skip with a warning
+            print(f"  [FILTER] Unknown option '{option}' — skipped.")
+            continue
+
+        adhd_score = OPTION_SCORES[option]["adhd"]
+
+        if adhd_score >= threshold:
+            valid.append(option)
+        else:
+            print(f"  [FILTER] '{option}' rejected — ADHD score {adhd_score} < threshold {threshold}.")
+
+    return valid
+
+
+# ──────────────────────────────────────────────
+# SECTION 4: SCORING ENGINE
+# ──────────────────────────────────────────────
+
+def score_option(option: str) -> float:
+    """
+    Compute weighted score for a single option.
+
+    Formula:
+        score = (trajectory × 0.30)
+              + (income     × 0.20)
+              + (adhd       × 0.20)
+              + (time       × 0.15)   ← higher time score = LESS time used = good
+              - (risk       × 0.15)   ← subtracted; lower risk is better
+    """
+    if option not in OPTION_SCORES:
+        return 0.0
+
+    s = OPTION_SCORES[option]
+    w = WEIGHTS
+
+    score = (
+          s["trajectory"] * w["trajectory"]
+        + s["income"]     * w["income"]
+        + s["adhd"]       * w["adhd"]
+        + s["time"]       * w["time"]
+        - s["risk"]       * w["risk"]
+    )
+    return round(score, 2)
+
+
+def rank_options(options: list) -> list:
+    """
+    Score all valid options and return them sorted highest → lowest.
+    Returns a list of (option_name, score) tuples.
+    """
+    results = {option: score_option(option) for option in options}
+    ranked  = sorted(results.items(), key=lambda x: x[1], reverse=True)
+    return ranked
+
+
+# ──────────────────────────────────────────────
+# SECTION 5: OUTPUT FORMATTER
+# ──────────────────────────────────────────────
+
+def print_output(case: dict, ranked: list) -> None:
+    """
+    Display the final decision output with scores and explanations.
+    """
+    separator = "─" * 48
+
+    print(f"\n{separator}")
+    print(f"  DECISION ENGINE v0.1")
+    print(f"{separator}")
+    print(f"  Objective : {case['objective']}")
+    print(f"  Resources : {case['resources']['time_hours']}h/day | "
+          f"Energy {case['resources']['energy']}/5 | "
+          f"Python skill {case['resources']['python_skill']}/5")
+
+    # Energy state advisory
+    energy_msg = energy_state_check(case["resources"])
+    print(f"\n  {energy_msg}")
+
+    # Ranked recommendations
+    print(f"\n  {'RANK':<5} {'OPTION':<25} {'SCORE':<8}")
+    print(f"  {'────':<5} {'──────────────────────':<25} {'─────':<8}")
+
+    for rank, (option, score) in enumerate(ranked, start=1):
+        print(f"  #{rank:<4} {option:<25} {score:<8}")
+        explanation = OPTION_EXPLANATIONS.get(option, "")
+        if explanation:
+            print(f"         → {explanation}")
+
+    # Uncertainty guardrail
+    uncertainty_msg = uncertainty_check(ranked)
+    if uncertainty_msg != "OK":
+        print(f"\n  ⚠  {uncertainty_msg}")
+
+    # Top recommendation summary
+    if ranked:
+        top_option = ranked[0][0]
+        print(f"\n  ✔  RECOMMENDED NEXT ACTION:")
+        print(f"     {top_option}")
+
+    print(f"{separator}\n")
+
+
+# ──────────────────────────────────────────────
+# SECTION 6: MAIN DECISION LOOP
+# ──────────────────────────────────────────────
+
+def run_engine(case: dict) -> None:
+    """
+    Main orchestrator.
+    Runs all guardrails → filter → scoring → output.
+    """
+
+    # Step 1: Completeness check
+    is_complete, missing = completeness_check(case)
+    if not is_complete:
+        print(f"\n[ERROR] Missing required variables: {missing}")
+        print("Please fill in all required fields before running the engine.")
+        return
+
+    # Step 2: Constraint filter (ADHD feasibility gate)
+    print(f"\n[Running constraint filter...]")
+    valid_options = constraint_filter(case["options"], case)
+
+    if not valid_options:
+        print("[ERROR] No options passed the constraint filter.")
+        print("Consider lowering the ADHD threshold or revising your options.")
+        return
+
+    # Step 3: Score and rank
+    ranked = rank_options(valid_options)
+
+    # Step 4: Output
+    print_output(case, ranked)
+
+
+# ──────────────────────────────────────────────
+# ENTRY POINT
+# ──────────────────────────────────────────────
+
+if __name__ == "__main__":
+    run_engine(decision_case)
